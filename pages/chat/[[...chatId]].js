@@ -8,18 +8,40 @@ import { useRouter } from "next/router";
 import { getSession } from "@auth0/nextjs-auth0";
 import clientPromise from "lib/mongodb";
 import { ObjectId } from "mongodb";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faRobot } from "@fortawesome/free-solid-svg-icons";
 
 export const getServerSideProps = async (context) => {
   const chatId = context.params?.chatId?.[0] || null;
 
   if (chatId) {
+    let objectId;
+
+    try {
+      objectId = new ObjectId(chatId);
+    } catch {
+      return {
+        redirect: {
+          destination: "/chat",
+        },
+      };
+    }
+
     const { user } = await getSession(context.req, context.res);
     const client = await clientPromise;
     const db = client.db("AIPal");
     const chat = await db.collection("chats").findOne({
       userId: user.sub,
-      _id: new ObjectId(chatId),
+      _id: objectId,
     });
+
+    if (!chat) {
+      return {
+        redirect: {
+          destination: "/chat",
+        },
+      };
+    }
 
     return {
       props: {
@@ -38,15 +60,32 @@ export const getServerSideProps = async (context) => {
 export default function ChatPage({ chatId, title, messages = [] }) {
   const [newChatId, setNewChatId] = useState(null);
   const [incomingMessage, setIncomingMessage] = useState("");
+  const [fullMessage, setFullMessage] = useState("");
   const [messageText, setMessageText] = useState("");
   const [chatMessages, setChatMessages] = useState([]);
   const [generatingResponse, setGeneratingResponse] = useState(false);
+  const [originalChatId, setOriginalChatId] = useState(chatId);
   const router = useRouter();
+  const routeHasChanged = chatId !== originalChatId;
 
   useEffect(() => {
     setChatMessages([]);
     setNewChatId(null);
-  }, [chatId])
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!routeHasChanged && !generatingResponse && fullMessage) {
+      setChatMessages((prevChatMessages) => [
+        ...prevChatMessages,
+        {
+          _id: uuid(),
+          role: "assistant",
+          content: fullMessage,
+        },
+      ]);
+      setFullMessage("");
+    }
+  }, [generatingResponse, fullMessage, routeHasChanged]);
 
   useEffect(() => {
     if (!generatingResponse && newChatId) {
@@ -66,8 +105,9 @@ export default function ChatPage({ chatId, title, messages = [] }) {
       return;
     }
 
-    setMessageText("");
     setGeneratingResponse(true);
+    setOriginalChatId(chatId);
+    setMessageText("");
     setChatMessages((prevChatMessages) => [
       ...prevChatMessages,
       {
@@ -84,6 +124,7 @@ export default function ChatPage({ chatId, title, messages = [] }) {
       },
       body: JSON.stringify({
         message: messageText,
+        chatId,
       }),
     });
     const data = response.body;
@@ -93,6 +134,7 @@ export default function ChatPage({ chatId, title, messages = [] }) {
     }
 
     const reader = data.getReader();
+    let content = "";
 
     await streamReader(reader, (message) => {
       if (message.event === "newChatId") {
@@ -101,9 +143,11 @@ export default function ChatPage({ chatId, title, messages = [] }) {
         setIncomingMessage(
           (incomingMessage) => incomingMessage + message.content
         );
+        content += message.content;
       }
     });
 
+    setFullMessage(content);
     setIncomingMessage("");
     setGeneratingResponse(false);
   };
@@ -118,16 +162,40 @@ export default function ChatPage({ chatId, title, messages = [] }) {
       <div className="grid h-screen grid-cols-[260px_1fr]">
         <ChatSidebar chatId={chatId} />
         <div className="flex flex-col overflow-hidden bg-gray-700">
-          <div className="flex-1 overflow-y-scroll text-white">
-            {allChatMessages.map((message) => (
-              <Message
-                key={message._id}
-                role={message.role}
-                content={message.content}
-              />
-            ))}
-            {incomingMessage && (
-              <Message role="assistant" content={incomingMessage} />
+          <div className="flex flex-1 flex-col-reverse overflow-y-scroll text-white">
+            {allChatMessages.length ? (
+              <div className="mb-auto">
+                {allChatMessages.map((message) => (
+                  <Message
+                    key={message._id}
+                    role={message.role}
+                    content={message.content}
+                  />
+                ))}
+                {incomingMessage && !routeHasChanged && (
+                  <Message role="assistant" content={incomingMessage} />
+                )}
+                {incomingMessage && routeHasChanged && (
+                  <Message
+                    role="warning"
+                    content="Only one message at a time. Please wait until other responses will complete before sending another message"
+                  />
+                )}
+              </div>
+            ) : !allChatMessages.length && !generatingResponse ? (
+              <div className="m-auto flex items-center justify-center text-center">
+                <div>
+                  <FontAwesomeIcon
+                    icon={faRobot}
+                    className="text-6xl text-emerald-200"
+                  />
+                  <h1 className="mt-2 text-4xl font-bold text-white/50">
+                    Ask me a question!
+                  </h1>
+                </div>
+              </div>
+            ) : (
+              ""
             )}
           </div>
           <footer className="bg-gray-800 p-10">
